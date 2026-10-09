@@ -35,8 +35,8 @@
       "short_query_dense_weight": 0.25,
       "highlight_threshold": 0.6,
       "page_size": 50,
-      "rerank_model": "jinaai/jina-reranker-v2-base-multilingual",
-      "default_dense_model": "e5_large",
+      "rerank_model": "infomaniak_qwen3_rerank",
+      "default_dense_model": "infomaniak_qwen3_embed",
       "default_included_section_types": [
         "executive_summary",
         "context",
@@ -49,6 +49,20 @@
     }
   },
   "supported_embedding_models": {
+    "infomaniak_qwen3_embed": {
+      "model_id": "Qwen/Qwen3-Embedding-8B",
+      "size": 4096,
+      "source": "openai",
+      "type": "dense",
+      "max_tokens": 8192
+    },
+    "ollama_bge_m3": {
+      "model_id": "bge-m3:latest",
+      "size": 1024,
+      "source": "huggingface",
+      "type": "dense",
+      "max_tokens": 8192
+    },
     "paraphrase_small": {
       "model_id": "sentence-transformers/paraphrase-multilingual-MiniLM-L12-v2",
       "size": 384,
@@ -154,6 +168,14 @@
     }
   },
   "supported_llms": {
+    "infomaniak_apertus_70b": {
+      "model": "swiss-ai/Apertus-v1.5-70B",
+      "provider": "openai"
+    },
+    "ollama_qwen3": {
+      "model": "qwen3:4b",
+      "provider": "openai"
+    },
     "qwen2.5-72b-instruct": {
       "model": "Qwen/Qwen2.5-72B-Instruct",
       "provider": "huggingface",
@@ -184,6 +206,14 @@
     }
   },
   "supported_rerank_models": {
+    "infomaniak_qwen3_rerank": {
+      "model_id": "Qwen/Qwen3-Reranker-0.6B",
+      "provider": "infomaniak"
+    },
+    "ollama_bge_reranker": {
+      "model_id": "qllama/bge-reranker-v2-m3",
+      "provider": "openai"
+    },
     "Cohere-rerank-v4.0-fast": {
       "model_id": "Cohere-rerank-v4.0-fast",
       "provider": "azure_foundry"
@@ -202,8 +232,60 @@
     }
   },
   "ui_model_combos": {
+    "Infomaniak AI": {
+        "default": true,
+        "embedding_model": "infomaniak_qwen3_embed",
+        "sparse_model": "bm25",
+        "reranker_model": "infomaniak_qwen3_rerank",
+        "summarization_model": {
+          "model": "infomaniak_apertus_70b",
+          "max_tokens": 1000,
+          "temperature": 0.2,
+          "chunk_overlap": 800,
+          "chunk_tokens_ratio": 0.5
+        },
+        "semantic_highlighting_model": {
+          "model": "infomaniak_apertus_70b",
+          "max_tokens": 500,
+          "temperature": 0.2,
+          "chunk_overlap": 800,
+          "chunk_tokens_ratio": 0.5
+        },
+        "assistant_model": {
+          "model": "infomaniak_apertus_70b",
+          "max_tokens": 1000,
+          "temperature": 0.2,
+          "chunk_overlap": 800,
+          "chunk_tokens_ratio": 0.5
+        }
+      },
+      "Ollama Local": {
+        "embedding_model": "ollama_bge_m3",
+        "sparse_model": "bm25",
+        "reranker_model": "ollama_bge_reranker",
+        "summarization_model": {
+          "model": "ollama_qwen3",
+          "max_tokens": 1000,
+          "temperature": 0.2,
+          "chunk_overlap": 800,
+          "chunk_tokens_ratio": 0.5
+        },
+        "semantic_highlighting_model": {
+          "model": "ollama_qwen3",
+          "max_tokens": 500,
+          "temperature": 0.2,
+          "chunk_overlap": 800,
+          "chunk_tokens_ratio": 0.5
+        },
+        "assistant_model": {
+          "model": "ollama_qwen3",
+          "max_tokens": 1000,
+          "temperature": 0.2,
+          "chunk_overlap": 800,
+          "chunk_tokens_ratio": 0.5
+        }
+      },
     "Azure Foundry": {
-      "default": true,
       "embedding_model": "azure_small",
       "sparse_model": "bm25",
       "summarization_model": {
@@ -284,7 +366,76 @@
     }
   },
   "datasources": {
-    "UN Humanitarian Evaluation Reports": {
+    "custom_docs": {
+        "data_subdir": "custom_docs",
+        "field_mapping": {
+          "title": "title",
+          "doc_title": "title",
+          "display_title": "title",
+          "filename": "filename",
+          "country": "country",
+          "category": "category",
+          "language": "fixed_value:en"
+        },
+        "default_filter_fields": {
+          "title": "Document Title",
+          "country": "Country",
+          "category": "Category"
+        },
+        "metadata_panel_fields": {
+          "title": "Document Title",
+          "country": "Country",
+          "category": "Category",
+          "full_summary": "Summary"
+        },
+        "pipeline": {
+          "processing_timeout": 3600,
+          "parse": {
+            "use_subprocess": true,
+            "table_mode": "fast",
+            "no_ocr": true,
+            "images_scale": 1.0,
+            "enable_superscripts": true
+          },
+          "chunk": {
+            "max_tokens": 450,
+            "min_substantive_size": 50,
+            "tokenizer": "intfloat/multilingual-e5-large"
+          },
+          "summarize": {
+            "enabled": true,
+            "dense_model": "infomaniak_qwen3_embed",
+            "llm_model": {
+              "model": "swiss-ai/Apertus-v1.5-70B",
+              "provider": "openai",
+              "temperature": 0.2,
+              "max_tokens": 1000
+            }
+          },
+          "tag": {
+            "enabled": true,
+            "dense_model": "infomaniak_qwen3_embed",
+            "llm_model": {
+              "model": "swiss-ai/Apertus-v1.5-70B",
+              "provider": "openai",
+              "temperature": 0.0,
+              "max_tokens": 2000
+            }
+          },
+          "index": {
+            "batch_size": 10,
+            "embedding_workers": 1,
+            "oversize_chunks_strategy": "truncate",
+            "dense_models": [
+              "infomaniak_qwen3_embed"
+            ],
+            "sparse_models": [
+              "bm25"
+            ]
+          }
+        }
+      },
+   "UN Humanitarian Evaluation Reports": {
       "data_subdir": "uneg",
       "field_mapping": {
         "organization": "agency",
@@ -360,24 +511,22 @@
         },
         "summarize": {
           "enabled": true,
-          "dense_model": "e5_large",
+          "dense_model": "ollama_bge_m3",
           "llm_model": {
-            "model": "Qwen/Qwen2.5-72B-Instruct",
-            "provider": "huggingface",
+            "model": "qwen3:4b",
+            "provider": "openai",
             "temperature": 0.2,
-            "max_tokens": 2000
-          },
-          "llm_workers": 6,
-          "context_window": 29000
+            "max_tokens": 1000
+          }
         },
         "tag": {
           "enabled": true,
-          "dense_model": "e5_large",
+          "dense_model": "ollama_bge_m3",
           "llm_model": {
-            "model": "Qwen/Qwen2.5-72B-Instruct",
-            "provider": "huggingface",
+            "model": "qwen3:4b",
+            "provider": "openai",
             "temperature": 0.0,
-            "max_tokens": 4000
+            "max_tokens": 2000
           },
           "taxonomies": {
             "sdg": {
@@ -518,8 +667,7 @@
           "embedding_workers": 1,
           "oversize_chunks_strategy": "truncate",
           "dense_models": [
-            "azure_small",
-            "e5_large"
+            "ollama_bge_m3"
           ],
           "sparse_models": [
             "bm25"

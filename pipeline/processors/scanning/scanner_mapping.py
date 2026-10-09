@@ -23,12 +23,15 @@ class ScannerMappingMixin:
 
     def _apply_field_mapping(
         self, metadata: Dict[str, Any]
-    ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
+     ) -> Tuple[Dict[str, Any], Dict[str, Any]]:
         raw_metadata = metadata.copy()
         field_mapping = get_field_mapping(self.db.data_source)
         logger.info("Field mapping for %s: %s", self.db.data_source, field_mapping)
         if not field_mapping:
-            return self._build_src_fields(raw_metadata), {}
+            return (
+                self._build_src_fields(raw_metadata),
+                self._fallback_map(raw_metadata, {}),
+            )
 
         mapped_core, fixed_value_fields = self._apply_fixed_values(field_mapping)
         mapped_core.update(
@@ -41,7 +44,7 @@ class ScannerMappingMixin:
 
         org_value = mapped_core.get("organization", "MISSING")
         logger.info("Final mapped organization: %s", org_value)
-        return src_fields, map_fields
+        return src_fields, self._fallback_map(raw_metadata, map_fields)
 
     # Fields that should never be split into lists (URLs, titles, years).
     _SCALAR_FIELDS = frozenset(
@@ -49,10 +52,26 @@ class ScannerMappingMixin:
     )
 
     @staticmethod
+    def _fallback_map(
+        raw: Dict[str, Any], map_fields: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Guarantee map_title (and map_language) exist."""
+        if not map_fields.get("map_title"):
+            map_fields["map_title"] = (
+                raw.get("title")
+                or raw.get("doc_title")
+                or raw.get("display_title")
+                or raw.get("filename")
+                or "Untitled Document"
+            )
+        return map_fields
+
+    @staticmethod
     def _resolve_source_value(
         raw_metadata: Dict[str, Any], mapping_value: str
     ) -> Optional[Any]:
         """Resolve a mapping value to the raw source value.
+        ...rest of the method unchanged...
 
         Supports:
         - Plain field names: ``"display_title"``

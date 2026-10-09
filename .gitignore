@@ -290,3 +290,9 @@ config.json
 /gcp.key.json.vertex
 /gcp.key.*.json
 /gcp.key.*
+
+# Other files
+20260925_SDC_Reports_tests.csv
+20260925_SDC_Reports_tests.xlsx
+json_doc_creator.py
+summarise.py

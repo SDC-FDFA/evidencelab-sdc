@@ -18,6 +18,7 @@ from pipeline.db import DB_VECTORS
 from pipeline.utilities.azure_client import AzureEmbeddingClient
 from pipeline.utilities.embedding_client import RemoteEmbeddingClient
 from pipeline.utilities.google_vertex_client import GoogleVertexEmbeddingClient
+from pipeline.utilities.openai_embedding_client import OpenAIEmbeddingClient
 
 logger = logging.getLogger(__name__)
 
@@ -74,10 +75,12 @@ class EmbeddingService:
             return self._create_google_vertex_client(name, model_id, vec_config)
         if source == "huggingface":
             return self._create_huggingface_client(name, model_id)
+        if source == "openai":
+            return self._create_openai_client(name, model_id)
 
         raise ValueError(
             f"Unsupported embedding model source '{source}' for model '{name}'. "
-            "Supported sources: 'huggingface', 'azure_foundry', 'google_vertex'."
+            "Supported sources: 'huggingface', 'azure_foundry', 'google_vertex', 'openai'."
         )
 
     def _create_azure_client(self, name: str, model_id: str) -> AzureEmbeddingClient:
@@ -131,4 +134,26 @@ class EmbeddingService:
         return RemoteEmbeddingClient(
             base_url=self._embedding_api_url,
             model_name=model_id,
+        )
+
+    def _create_openai_client(self, name: str, model_id: str) -> OpenAIEmbeddingClient:
+        api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("INFOMANIAK_API_KEY")
+        
+        if not api_base:
+            raise ValueError(
+                f"OPENAI_BASE_URL / OPENAI_API_BASE environment variable not set for "
+                f"OpenAI embedding model '{name}' ({model_id})."
+            )
+        
+        logger.info(
+            "EmbeddingService: created OpenAI embedding client for '%s' (%s) via %s",
+            name,
+            model_id,
+            api_base,
+        )
+        return OpenAIEmbeddingClient(
+            base_url=api_base,
+            model_name=model_id,
+            api_key=api_key,
         )

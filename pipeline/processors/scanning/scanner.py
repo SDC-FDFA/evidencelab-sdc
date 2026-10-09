@@ -477,6 +477,13 @@ class ScanProcessor(ScannerMappingMixin, BaseProcessor):
             with open(json_path, "r", encoding="utf-8") as f:
                 data = json.load(f)
 
+            # Ensure 'title' key exists at top level of metadata
+            if "title" not in data or not data["title"]:
+                for title_key in ["doc_title", "display_title", "name", "filename"]:
+                    if data.get(title_key):
+                        data["title"] = data[title_key]
+                        break
+
             # Clean title to remove any URL suffixes
             if "title" in data and data["title"]:
                 data["title"] = clean_title(data["title"])
@@ -632,6 +639,22 @@ class ScanProcessor(ScannerMappingMixin, BaseProcessor):
         metadata: Dict[str, Any],
     ) -> Dict[str, Any]:
         src_fields, map_fields = self._apply_field_mapping(metadata)
+        if not map_fields.get("map_title"):
+            map_fields["map_title"] = (
+                metadata.get("title")
+                or metadata.get("doc_title")
+                or metadata.get("display_title")
+                or metadata.get("filename")
+                or "Untitled Document"
+            )
+
+        if not map_fields.get("map_language"):
+            map_fields["map_language"] = (
+                metadata.get("language")
+                or metadata.get("sys_language")
+                or "en"
+            )
+
         return {**src_fields, **map_fields}
 
     def _build_sys_fields(

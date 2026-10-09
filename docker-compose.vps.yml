@@ -1,0 +1,70 @@
+# VPS override for docker-compose.prod.yml  (Qdrant runs in Docker, nothing but Caddy is public)
+#
+#   docker compose -f docker-compose.prod.yml -f docker-compose.vps.yml up -d --build
+#
+# Use this INSTEAD of docker-compose.prod.override.yml.
+# Needs Docker Compose >= 2.24.4 (for "!reset"): check with `docker compose version`.
+
+services:
+  qdrant:
+    image: qdrant/qdrant:${QDRANT_VERSION:-latest}   # pin QDRANT_VERSION in .env to your local version
+    container_name: qdrant
+    ports:
+      - "127.0.0.1:6333:6333"          # reachable from the server itself only
+    environment:
+      - QDRANT__SERVICE__API_KEY=${QDRANT_API_KEY}
+    volumes:
+      - ${DB_DATA_MOUNT:-/mnt/data/db}/qdrant:/qdrant/storage:z
+      - ${DB_DATA_MOUNT:-/mnt/data/db}/backups:/qdrant/snapshots:z
+    restart: unless-stopped
+    networks:
+      - app-network
+    healthcheck:
+      test: ["CMD", "bash", "-c", "exec 3<>/dev/tcp/127.0.0.1/6333 && echo -e 'GET /readyz HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n' >&3 && grep -q 'HTTP/1.1 200' <&3"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+      start_period: 10s
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          memory: 512M
+
+  postgres:
+    ports: !reset []                    # not reachable from outside the Docker network
+
+  # Local embedding model is not used (embeddings come from Infomaniak). Not started unless
+  # you run: docker compose ... --profile embedding up -d
+  embedding-server:
+    ports: !reset []
+    profiles: ["embedding"]
+
+  # MCP server is not needed for the test (and Caddy does not route to it). Same mechanism.
+  mcp:
+    profiles: ["mcp"]
+
+  api:
+    environment:
+      - QDRANT_HOST=http://qdrant:6333
+      # Same as the development compose, where you tested with embedding-server stopped:
+      - USE_EMBEDDING_SERVER=true
+      - EMBEDDING_API_URL=http://embedding-server:7997
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_healthy
+    # Same as prod, minus the "wait for Qdrant on the host" loop (Qdrant is a container here)
+    command: bash -c "alembic upgrade head && uvicorn ui.backend.main:app --host 0.0.0.0 --port 8000 --workers 1"
+    deploy:
+      resources:
+        limits:
+          memory: 3G
+        reservations:
+          memory: 1G
+
+  reverse-proxy:
+    volumes:
+      - ./Caddyfile.vps:/etc/caddy/Caddyfile   # replaces the repo's Caddyfile mount

@@ -24,6 +24,7 @@ from ui.backend.services.google_vertex_reranker import (  # noqa: E402
     RerankerUnavailableError,
     rerank_with_google_vertex,
 )
+from ui.backend.services.infomaniak_reranker import rerank_with_infomaniak
 
 load_dotenv()
 
@@ -246,6 +247,21 @@ def _init_dense_model(vector_name: str, vec_config: Dict[str, Any]) -> Any:
             output_dimensionality=output_dimensionality,
         )
 
+    if source == "openai":
+        from pipeline.utilities.openai_embedding_client import OpenAIEmbeddingClient
+
+        api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
+        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("INFOMANIAK_API_KEY")
+        if not api_base:
+            raise ValueError(
+                f"OPENAI_BASE_URL / OPENAI_API_BASE not set for {vector_name}"
+            )
+        return OpenAIEmbeddingClient(
+            base_url=api_base,
+            model_name=str(model_id),
+            api_key=api_key,
+        )
+
     if USE_EMBEDDING_SERVER:
         if source not in {"huggingface", "fastembed"}:
             raise ValueError(
@@ -431,6 +447,12 @@ def _compute_rerank_scores(
         vertex_model_id = rerank_config.get("model_id", model_name)
         with _rerank_semaphore:
             return _rerank_via_vertex_with_fallback(query, documents, vertex_model_id)
+    if _is_infomaniak_reranker(rerank_config):
+        infomaniak_model_id = rerank_config.get("model_id", model_name)
+        with _rerank_semaphore:
+            return _rerank_via_infomaniak_with_fallback(
+                query, documents, infomaniak_model_id, rerank_config
+            )
     if rerank_model_loader is not None:
         reranker = rerank_model_loader(rerank_model)
     else:
@@ -439,6 +461,26 @@ def _compute_rerank_scores(
         )
     with _rerank_semaphore:
         return list(reranker.rerank(query, documents))
+
+
+def _is_infomaniak_reranker(config: Dict[str, Any]) -> bool:
+    return (
+        config.get("provider") == "infomaniak"
+        or config.get("source") == "infomaniak"
+    )
+
+
+def _rerank_via_infomaniak_with_fallback(
+    query: str, documents: List[str], model_id: str, config: Dict[str, Any]
+) -> Optional[List[float]]:
+    """Call Infomaniak; return ``None`` on transient unavailability."""
+    try:
+        return rerank_with_infomaniak(
+            query=query, documents=documents, model_id=model_id, config=config
+        )
+    except RerankerUnavailableError as exc:
+        logger.warning("Infomaniak reranker unavailable, skipping rerank: %s", exc)
+        return None
 
 
 def _is_google_vertex_reranker(config: Dict[str, Any]) -> bool:
@@ -478,6 +520,8 @@ def get_rerank_model(
             model = {"type": "azure_foundry", "config": rerank_config}
         elif _is_google_vertex_reranker(rerank_config):
             model = {"type": "google_vertex", "config": rerank_config}
+        elif _is_infomaniak_reranker(rerank_config):
+            model = {"type": "infomaniak", "config": rerank_config}
         else:
             cross_encoder_module = importlib.import_module(
                 "fastembed.rerank.cross_encoder"
