@@ -1,0 +1,12 @@
+# 1) Replace the domain below with yours (its DNS record must point to the server's IP)
+# 2) Replace the hash: docker run --rm caddy caddy hash-password --plaintext 'your-password'
+evidencelab.yourorg.ch {
+	encode gzip
+
+	basic_auth {
+		testers PASTE_HASH_HERE
+	}
+
+	# Assumes the UI container's nginx forwards /api to the API (check ui/frontend nginx config)
+	reverse_proxy ui:80
+}
