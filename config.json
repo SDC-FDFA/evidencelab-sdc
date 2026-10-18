@@ -366,8 +366,8 @@
     }
   },
   "datasources": {
-    "custom_docs": {
-        "data_subdir": "custom_docs",
+    "SDC Evaluation Reports": {
+        "data_subdir": "sdc_evaluations",
         "field_mapping": {
           "title": "title",
           "doc_title": "title",
@@ -375,18 +375,23 @@
           "filename": "filename",
           "country": "country",
           "category": "category",
-          "language": "fixed_value:en"
+          "language": "language",
+          "published_year": "year"
         },
         "default_filter_fields": {
           "title": "Document Title",
           "country": "Country",
-          "category": "Category"
+          "src_category": "Category",
+          "published_year": "Year Published",
+          "language": "Language"
         },
         "metadata_panel_fields": {
           "title": "Document Title",
           "country": "Country",
-          "category": "Category",
-          "full_summary": "Summary"
+          "src_category": "Category",
+          "full_summary": "Summary",
+          "published_year": "Year Published",
+          "language": "Language"
         },
         "pipeline": {
           "processing_timeout": 3600,
