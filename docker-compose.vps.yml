@@ -68,3 +68,12 @@ services:
   reverse-proxy:
     volumes:
       - ./Caddyfile.vps:/etc/caddy/Caddyfile   # replaces the repo's Caddyfile mount
+  
+  mailpit:
+    image: axllent/mailpit:latest
+    container_name: mailpit
+    ports:
+      - "127.0.0.1:8025:8025"
+    restart: unless-stopped
+    networks:
+      - app-network
