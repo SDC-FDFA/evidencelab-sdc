@@ -131,6 +131,8 @@ def _load_rerank_models(config: Dict[str, Any]) -> Dict[str, Dict[str, Any]]:
             "model_id": model_info.get("model_id", model_name),
             "source": model_info.get("source", "huggingface"),
             "provider": model_info.get("provider"),
+            # Bedrock rerank models are offered in only some AWS regions.
+            "region": model_info.get("region"),
         }
     return result
 
@@ -225,6 +227,21 @@ def get_field_mapping(data_source: str) -> Dict[str, str]:
         ):
             return domain_config.get("field_mapping", {})
     return {}
+
+
+def get_summarize_config(data_source: str) -> Dict[str, Any]:
+    """The ``pipeline.summarize`` block of a data source (matched on its key or
+    ``data_subdir``). Raises ValueError when the data source has none."""
+    datasources = load_datasources_config().get("datasources", {})
+    for key, domain_config in datasources.items():
+        if not isinstance(domain_config, dict):
+            continue
+        if data_source in (key, domain_config.get("data_subdir")):
+            summarize = domain_config.get("pipeline", {}).get("summarize")
+            if isinstance(summarize, dict):
+                return summarize
+            break
+    raise ValueError(f"No pipeline.summarize config for data source {data_source!r}")
 
 
 def get_default_filter_fields(data_source: str) -> Dict[str, str]:

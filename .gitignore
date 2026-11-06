@@ -291,8 +291,32 @@ config.json
 /gcp.key.*.json
 /gcp.key.*
 
+# Analysis notebook outputs (per-brief exports and judge cache)
+notebooks/output/
+
+# Terraform (deploy/): state holds generated keys; local settings and plans
+.terraform/
+*.tfstate
+*.tfstate.*
+*.tfvars
+!*.tfvars.example
+tfplan*
+
+# deploy/<cloud>/scripts/deploy.sh --demo writes its configuration here
+deploy/aws/.demo/
+deploy/azure/.demo/
+deploy/gcp/.demo/
+
+# SDC deployment
+Caddyfile.server
+*.dump
+
 # Other files
 20260925_SDC_Reports_tests.csv
 20260925_SDC_Reports_tests.xlsx
 json_doc_creator.py
 summarise.py
+
+# SDC deployment
+Caddyfile.server
+*.dump

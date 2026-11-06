@@ -159,18 +159,19 @@ describe('GroupSettingsManager greetingMessage', () => {
     });
   });
 
+  // Appearance is a tab of the group settings.
+  const openAppearance = async () => fireEvent.click(await screen.findByRole('tab', { name: 'Appearance' }));
+
   test('shows override greeting message checkbox', async () => {
     render(<GroupSettingsManager />);
-    await waitFor(() => {
-      expect(screen.getByText('Override greeting message')).toBeInTheDocument();
-    });
+    await openAppearance();
+    expect(screen.getByText('Override greeting message')).toBeInTheDocument();
   });
 
   test('loads greetingMessage value from group settings', async () => {
     render(<GroupSettingsManager />);
-    await waitFor(() => {
-      expect(screen.getByText('Override greeting message')).toBeInTheDocument();
-    });
+    await openAppearance();
+    expect(screen.getByText('Override greeting message')).toBeInTheDocument();
 
     // The greeting message input appears only after the default group is
     // auto-selected and its settings load (several async state updates after
@@ -195,5 +196,27 @@ describe('GroupSettingsManager greetingMessage', () => {
         summary_prompt: '',
       });
     });
+  });
+});
+
+describe('SearchBox modelsReady', () => {
+  const props = {
+    isActive: true,
+    hasSearched: false,
+    query: 'WASH programme effectiveness',
+    loading: false,
+    searchError: null,
+    onQueryChange: jest.fn(),
+    onSubmit: jest.fn(),
+  };
+
+  test('disables Search until the model combo is applied', () => {
+    render(<SearchBox {...props} modelsReady={false} />);
+    expect(screen.getByRole('button', { name: 'Search' })).toBeDisabled();
+  });
+
+  test('enables Search once the model combo is applied', () => {
+    render(<SearchBox {...props} modelsReady />);
+    expect(screen.getByRole('button', { name: 'Search' })).toBeEnabled();
   });
 });

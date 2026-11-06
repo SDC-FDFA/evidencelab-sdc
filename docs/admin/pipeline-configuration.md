@@ -29,7 +29,8 @@ The `application` section controls global behavior:
     "ai_summary": { "enabled": true },
     "features": {
       "semantic_highlights": true,
-      "pdf_highlights": true
+      "pdf_highlights": true,
+      "anonymous_ratings": false
     },
     "search": {
       "dense_weight": 0.5,
@@ -47,6 +48,7 @@ The `application` section controls global behavior:
 | `ai_summary.enabled` | boolean | Enable or disable AI-generated summaries in search results |
 | `features.semantic_highlights` | boolean | Highlight semantically relevant phrases in search results |
 | `features.pdf_highlights` | boolean | Show bounding-box highlights in the PDF viewer |
+| `features.anonymous_ratings` | boolean | Let visitors who are not signed in rate content. Needs sign-in to be enabled (`USER_MODULE` `on_passive`). Each browser keeps one rating per item, tracked with the `evidencelab_rater` cookie. Off when absent. See [Ratings & Feedback](../using-evidence-lab/ratings-feedback.md) |
 | `search.dense_weight` | float (0–1) | Balance between semantic (1.0) and keyword (0.0) search. Default: 0.5 |
 | `search.short_query_dense_weight` | float | Override dense weight for very short queries (1–2 words) |
 | `search.highlight_threshold` | float | Minimum similarity score for a phrase to be highlighted |
@@ -69,21 +71,21 @@ Each entry defines a model that can be used for vector embeddings:
 |-------|------|-------------|
 | `model_id` | string | Full model identifier (e.g., `"intfloat/multilingual-e5-large"`) |
 | `size` | int | Vector dimensionality (e.g., 1024) |
-| `source` | string | Provider: `"huggingface"`, `"azure_foundry"`, `"google_vertex"`, `"fastembed"` |
+| `source` | string | Provider: `"huggingface"`, `"azure_foundry"`, `"google_vertex"`, `"aws_bedrock"`, `"fastembed"` |
 | `type` | string | `"dense"` or `"sparse"` |
 | `max_tokens` | int | Maximum input token length |
 
 The `source` field determines how the model is loaded:
 - **`huggingface`** / **`fastembed`** — runs locally via an embedding server (requires GPU or MPS for best performance)
-- **`azure_foundry`** / **`google_vertex`** — accessed via remote API (requires API keys in `.env`)
+- **`azure_foundry`** / **`google_vertex`** / **`aws_bedrock`** — accessed via remote API (requires credentials in `.env`, see [Amazon Bedrock](#amazon-bedrock) for AWS)
 
 #### LLM Models (`supported_llms`)
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `model` | string | Full model identifier (e.g., `"gpt-4.1-mini"`, `"gemini-2.5-flash"`) |
-| `provider` | string | `"huggingface"`, `"azure_foundry"`, or `"google_vertex"` |
-| `inference_provider` | string | Optional routing provider (e.g., `"together"`, `"novita"`) |
+| `model` | string | Full model identifier (e.g., `"gpt-4.1-mini"`, `"gemini-3.8-flash"`) |
+| `provider` | string | `"huggingface"`, `"azure_foundry"`, `"google_vertex"` or `"aws_bedrock"` |
+| `inference_provider` | string | Hugging Face only: the provider the router must use (e.g., `"novita"`, `"together"`). If the provider stops serving the model, calls fail with an error rather than moving to another provider. Leave it out to let Hugging Face choose. |
 | `max_tokens` | int | Maximum output tokens |
 
 #### Rerank Models (`supported_rerank_models`)
@@ -91,7 +93,26 @@ The `source` field determines how the model is loaded:
 | Field | Type | Description |
 |-------|------|-------------|
 | `model_id` | string | Model identifier |
-| `source` or `provider` | string | `"huggingface"` for local, `"azure_foundry"` / `"google_vertex"` for API |
+| `source` or `provider` | string | `"huggingface"` for local, `"azure_foundry"` / `"google_vertex"` / `"aws_bedrock"` for API |
+| `region` | string | `aws_bedrock` only: the AWS region to call the reranker in, when it differs from `AWS_REGION` (rerank models are offered in only some regions) |
+
+#### Amazon Bedrock
+
+The stock `config.json` includes Bedrock models and an **AWS Bedrock** model combo:
+
+| Key | Kind | Bedrock model |
+|---|---|---|
+| `aws_titan_v2` | Embedding | Amazon Titan Text Embeddings V2 (`amazon.titan-embed-text-v2:0`), 1024 dimensions |
+| `nova-2-lite` | LLM | Amazon Nova 2 Lite, through the US inference profile `us.amazon.nova-2-lite-v1:0` |
+| `cohere-rerank-3.5-bedrock` | Reranker | Cohere Rerank 3.5 (`cohere.rerank-v3-5:0`), called in `us-west-2` |
+
+Evidence Lab calls Bedrock with the standard AWS credentials: `AWS_REGION` plus `AWS_ACCESS_KEY_ID` and `AWS_SECRET_ACCESS_KEY` (and `AWS_SESSION_TOKEN` for temporary credentials) in `.env`, or the task role when running on Amazon ECS. The credentials need permission for `bedrock:InvokeModel` and `bedrock:InvokeModelWithResponseStream`.
+
+Model availability differs by region. Check what your region offers with `aws bedrock list-foundation-models --region <region>`, then adjust the entries:
+
+- **Embedding:** Titan Text Embeddings V2 is offered in most regions. Embedding models cannot be changed after a data source is indexed.
+- **LLM:** Nova 2 Lite is called through an inference profile whose prefix matches your region's geography: `us.` in the United States, `eu.` in Europe, `apac.` in Asia Pacific.
+- **Reranker:** Cohere Rerank 3.5 is offered in only a few regions, including `us-west-2`, `eu-central-1` and `ap-northeast-1`. Set `region` to one near you.
 
 ---
 
@@ -103,6 +124,7 @@ Model combos are named presets that bundle embedding, LLM, and reranking models 
 {
   "ui_model_combos": {
     "Azure Foundry": {
+      "default": true,
       "embedding_model": "azure_small",
       "sparse_model": "bm25",
       "summarization_model": {
@@ -115,11 +137,33 @@ Model combos are named presets that bundle embedding, LLM, and reranking models 
         "max_tokens": 4096,
         "temperature": 0.0
       },
-      "reranker_model": "azure_rerank"
+      "reranker_model": "Cohere-rerank-v4.0-fast"
     }
   }
 }
 ```
+
+### Choosing which combo users start on
+
+`"default": true` marks the combo a visitor starts on. It is optional: with no
+combo flagged, the first one in the file is used, so the order of
+`ui_model_combos` decides it. Flagging one explicitly means reordering the file
+no longer changes which models people get by default.
+
+Flag at most one. If several are flagged the first of them wins, and if the
+flagged combo's embedding model is not indexed for the datasource being viewed
+— so it does not appear in the **Models** dropdown for that datasource — the
+first combo that *is* available is used instead.
+
+The same flag decides the combo used by the evaluation harness and the A2A
+server when a request does not name one, so the whole system starts from the
+same place.
+
+> **Hiding the picker.** Removing the **Models** dropdown is a branding change,
+> not a setting: a deployment that offers one combo can hide it with CSS in its
+> `CUSTOMIZE_ASSETS` overlay (see [Customization & Branding](customization.md)).
+> Hiding it does not restrict the combos — the API still accepts any of them —
+> so a single-combo deployment should also list only that combo here.
 
 | Field | Type | Description |
 |-------|------|-------------|
@@ -245,7 +289,8 @@ When a placeholder resolves to `null`, both it and its preceding flag are cleanl
 | `enable_superscripts` | boolean | `true` | Enable superscript/footnote detection |
 | `use_subprocess` | boolean | `false` | Run parsing in a subprocess for OOM protection |
 | `subprocess_timeout` | int | `1200` | Timeout in seconds for subprocess parsing (20 minutes) |
-| `ocr_fallback` | boolean | `false` | Automatically retry with OCR if initial parse yields fewer than 10 words (e.g. scanned image PDFs). Also available as `--ocr-fallback` CLI flag. When OCR is applied, `sys_ocr_applied` is set to `true` in the document record. |
+| `ocr_fallback` | boolean | `false` | Retry with OCR when the first parse is thin: fewer than 10 words in total, or fewer than `ocr_fallback_min_words_per_page` words per page on average (scanned image PDFs). Also available as the `--ocr-fallback` CLI flag — note the flag additionally re-queues *every* `summarize_failed` and `parse_failed` document for re-parsing, whereas the config setting only changes how documents that are parsed anyway are handled. When OCR is applied, `sys_ocr_applied` is set to `true` in the document record. |
+| `ocr_fallback_min_words_per_page` | int | `25` | With `ocr_fallback`, the per-page average below which a parse is retried with OCR. A scanned report with a text cover page parses to a few hundred words across many pages and would otherwise slip past the absolute 10-word floor (measured: 80 pages → 208 words, 93 → 194, 20 → 119), then summarise to nothing. Real documents run to hundreds of words per page. `0` turns the per-page rule off and keeps the absolute floor. |
 
 #### Chunk
 
@@ -264,6 +309,15 @@ When a placeholder resolves to `null`, both it and its preceding flag are cleanl
 | `llm_model` | object | Required | LLM configuration (model, temperature, max_tokens) |
 | `llm_workers` | int | `1` | Concurrent LLM inference workers |
 | `context_window` | int | `29000` | Max characters for LLM context (larger documents use map-reduce) |
+| `mode` | string | `map_reduce` | How summaries are written: `map_reduce` or `single_prompt` (see below) |
+| `single_prompt_context_window` | int | `1048576` | Tokens a single prompt may use, counted by the model; the default is Gemini 2.5 Flash's input limit |
+| `section_types` | list | every section type | Sections whose text is summarised when a summary is regenerated in the app |
+
+**Summary modes.** In `map_reduce` mode a document that fits in `context_window` is summarised in one call; a larger one is split into parts, each part is summarised, and the part summaries are combined. In `single_prompt` mode all the text goes to the model in one call. Before sending, the prompt is counted in tokens by the model that will read it; if those tokens plus the summary's `max_tokens` are more than `single_prompt_context_window`, it stops with an error naming both numbers rather than switching to map reduce. A model that cannot count its tokens exactly (Hugging Face models) cannot be used for a single prompt. The window defaults to 1,048,576 tokens, Gemini 2.5 Flash's input limit; set it lower for data sources whose summaries are written by a smaller model, whether the pipeline's `llm_model` or, for summaries regenerated in the app, the summarization models of the [UI model combos](#ui-model-combos). The map-reduce `context_window` counts one character as one token, which is cautious for English text.
+
+**Summary prompt.** What a summary must contain is set by `prompts/summary_instructions.j2`. Administrators can use a different prompt when they regenerate summaries in the app, and groups can set a default one (see [Document Summaries](document-summaries.md)). The pipeline always uses the file.
+
+**Summaries set in the app.** A summary written, edited or regenerated in the app is kept when the document is reprocessed, unless the person reprocessing chooses to replace it.
 
 #### Tag
 
@@ -358,6 +412,41 @@ docker compose exec pipeline \
 | `--file-id` | Process a specific document by ID |
 
 ---
+
+#### Stopping when the data disk fills
+
+Parsed output is large — one data source held 17k source documents but 352 GB of parsed output — so the data disk can fill mid-run. When it does, every remaining document fails *individually* with `OSError: [Errno 28] No space left on device` and is marked `parse_failed` as if the document itself were bad, and a long run churns through its whole queue producing nothing but failures.
+
+The pipeline therefore stops itself when the disk is full:
+
+- **Before starting workers** and **after every completed document**, it checks free space at the data directory and stops if it is below `PIPELINE_MIN_FREE_DISK_MB` (default **5120**, i.e. 5 GB).
+- If any worker reports a `No space left on device` error, the run stops immediately regardless of that figure.
+
+The run exits with a clear message and a non-zero status. Documents that were in flight are left in their stage status (`parsing`, `summarizing`, …); after freeing space, put them back in the queue with:
+
+```bash
+python scripts/pipeline/reset_failed_statuses.py --data-source <name> --include-stuck
+```
+
+Documents that already failed with the ENOSPC error are in `parse_failed` and are reset by the same command — they are not corrupt, they simply ran out of disk.
+
+Set `PIPELINE_MIN_FREE_DISK_MB=0` to turn off the free-space floor; the reaction to an actual ENOSPC error stays on. The variable is optional and a stock deployment needs no setting.
+
+#### Capping a worker's memory
+
+A single pathological document can make the parser's memory grow without bound — measured on one 237-page PDF: a worker went from ~5 GB to **42 GB** inside Docling's convert, with no log output, while an ordinary 190-page document peaked at 5.8 GB. Several such workers at once exhaust the machine's memory, and on a laptop that ends in a kernel panic rather than a failed document.
+
+The orchestrator therefore watches every worker's memory and, when one exceeds `PIPELINE_MAX_WORKER_MEMORY_MB` (default **12288**, i.e. 12 GB — about twice the normal footprint), it marks that document `parse_failed` with the measured figure in the reason, kills the worker, and continues with the rest of the queue. The pool replaces the worker automatically.
+
+The figure measured is the one the operating system attributes to the process: `phys_footprint` on macOS (what Activity Monitor and `top` show — resident size alone understates a ballooning worker by more than ten times there) and RSS on Linux.
+
+Each worker's process title shows the document it is on, so `ps` tells you what a large worker is doing:
+
+```
+EvLab-Pipeline-37080 e6e47267-68e5-5779-8112-9c2f56fe5768
+```
+
+Set `PIPELINE_MAX_WORKER_MEMORY_MB=0` to turn the cap off. It applies to parallel runs (`--workers` > 1); a sequential run processes documents in the orchestrator's own process, which cannot be killed without ending the run, and says so at startup.
 
 ### Running on the Host (Hardware Acceleration)
 

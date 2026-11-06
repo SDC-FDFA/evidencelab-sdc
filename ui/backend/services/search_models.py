@@ -5,6 +5,7 @@ import os
 import re
 import threading
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from typing import Any, Dict, List, Optional
 from urllib.parse import urlparse
@@ -14,17 +15,24 @@ from dotenv import load_dotenv
 
 from pipeline.db import DENSE_VECTOR_NAME  # noqa: E402
 from pipeline.db import DB_VECTORS, SUPPORTED_RERANK_MODELS, get_application_config
+from pipeline.utilities.aws_bedrock_client import (
+    BedrockEmbeddingClient,
+    rerank_with_aws_bedrock,
+)
 from pipeline.utilities.azure_client import AzureEmbeddingClient  # noqa: E402
 from pipeline.utilities.embedding_client import RemoteEmbeddingClient  # noqa: E402
 from pipeline.utilities.google_vertex_client import (  # noqa: E402
     GoogleVertexEmbeddingClient,
 )
+from pipeline.utilities.openai_embedding_client import OpenAIEmbeddingClient
 from ui.backend.services.azure_foundry_reranker import rerank_with_azure_foundry
+from ui.backend.services.cohere_compatible_reranker import (
+    rerank_with_cohere_compatible,
+)
 from ui.backend.services.google_vertex_reranker import (  # noqa: E402
     RerankerUnavailableError,
     rerank_with_google_vertex,
 )
-from ui.backend.services.infomaniak_reranker import rerank_with_infomaniak
 
 load_dotenv()
 
@@ -72,8 +80,38 @@ _sparse_model = None
 _sparse_model_lock = threading.Lock()
 _rerank_models_cache: dict[str, Any] = {}
 _rerank_models_lock = threading.Lock()
+# Local reranking loads a model into this process and scores in-process, so
+# running several at once multiplies resident memory and has OOM-killed the
+# API before. Keep it at one by default.
 MAX_CONCURRENT_RERANKS = int(os.environ.get("MAX_CONCURRENT_RERANKS", "1"))
 _rerank_semaphore = threading.Semaphore(MAX_CONCURRENT_RERANKS)
+
+# Degradation notes for the current search (e.g. the reranker fell back to the
+# unranked order). A caller that wants them sets this to a list for the
+# duration of its search; the list is shared with worker threads because
+# ``run_in_threadpool`` copies the context, so appends made there are visible
+# to the caller. Left unset (the UI path), notes are only logged.
+search_warnings: ContextVar[Optional[List[str]]] = ContextVar(
+    "search_warnings", default=None
+)
+
+
+def note_search_warning(message: str) -> None:
+    """Record a degradation note for the current search, if anyone is collecting."""
+    notes = search_warnings.get()
+    if notes is not None:
+        notes.append(message)
+
+
+# A hosted reranker (Azure Foundry, Google Vertex) is an HTTP call: it costs
+# this process a socket and some waiting, not a model's worth of memory. It
+# shared the local limit above, which serialised every reranked search in
+# deployments that use a hosted reranker. Bound it separately, high enough to
+# overlap requests but low enough to stay inside provider rate limits.
+MAX_CONCURRENT_REMOTE_RERANKS = int(
+    os.environ.get("MAX_CONCURRENT_REMOTE_RERANKS", "8")
+)
+_remote_rerank_semaphore = threading.Semaphore(MAX_CONCURRENT_REMOTE_RERANKS)
 
 
 def _normalize_embedding_url(url: str) -> str:
@@ -247,19 +285,20 @@ def _init_dense_model(vector_name: str, vec_config: Dict[str, Any]) -> Any:
             output_dimensionality=output_dimensionality,
         )
 
-    if source == "openai":
-        from pipeline.utilities.openai_embedding_client import OpenAIEmbeddingClient
+    if source == "aws_bedrock":
+        return BedrockEmbeddingClient(
+            model_id=str(model_id), dimensions=vec_config.get("size")
+        )
 
-        api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
-        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("INFOMANIAK_API_KEY")
-        if not api_base:
-            raise ValueError(
-                f"OPENAI_BASE_URL / OPENAI_API_BASE not set for {vector_name}"
-            )
+    if source == "openai":
+        base_url_env = vec_config.get("base_url_env", "OPENAI_BASE_URL")
+        base_url = os.getenv(base_url_env)
+        if not base_url:
+            raise ValueError(f"{base_url_env} is required for source 'openai'.")
         return OpenAIEmbeddingClient(
-            base_url=api_base,
+            base_url=base_url,
             model_name=str(model_id),
-            api_key=api_key,
+            api_key=os.getenv(vec_config.get("api_key_env", "OPENAI_API_KEY")),
         )
 
     if USE_EMBEDDING_SERVER:
@@ -418,6 +457,33 @@ def _rerank_via_vertex_with_fallback(
         return None
 
 
+def _rerank_via_cohere_compatible_with_fallback(
+    query: str,
+    documents: List[str],
+    model_id: str,
+    config: Dict[str, Any],
+) -> Optional[List[float]]:
+    """Call a Cohere-compatible reranker; ``None`` on transient unavailability.
+
+    Mirrors the Vertex behaviour: a transient failure (HTTP 429/5xx, network
+    error, timeout) logs a warning and returns ``None`` so the caller falls
+    back to the unranked results. Other errors propagate.
+    """
+    try:
+        return rerank_with_cohere_compatible(
+            query=query, documents=documents, model_id=model_id, config=config
+        )
+    except RerankerUnavailableError as exc:
+        logger.warning(
+            "Cohere-compatible reranker unavailable (%s); falling back to "
+            "no-rerank for %d documents (model %s).",
+            exc,
+            len(documents),
+            model_id,
+        )
+        return None
+
+
 def _compute_rerank_scores(
     query: str,
     documents: List[str],
@@ -436,7 +502,7 @@ def _compute_rerank_scores(
     """
     if _is_azure_foundry_reranker(rerank_config):
         deployment = rerank_config.get("model_id", model_name)
-        with _rerank_semaphore:
+        with _remote_rerank_semaphore:
             return rerank_with_azure_foundry(
                 query=query,
                 documents=documents,
@@ -445,13 +511,23 @@ def _compute_rerank_scores(
             )
     if _is_google_vertex_reranker(rerank_config):
         vertex_model_id = rerank_config.get("model_id", model_name)
-        with _rerank_semaphore:
+        with _remote_rerank_semaphore:
             return _rerank_via_vertex_with_fallback(query, documents, vertex_model_id)
-    if _is_infomaniak_reranker(rerank_config):
-        infomaniak_model_id = rerank_config.get("model_id", model_name)
-        with _rerank_semaphore:
-            return _rerank_via_infomaniak_with_fallback(
-                query, documents, infomaniak_model_id, rerank_config
+    if _is_aws_bedrock_reranker(rerank_config):
+        with _remote_rerank_semaphore:
+            return rerank_with_aws_bedrock(
+                query=query,
+                documents=documents,
+                model_id=rerank_config.get("model_id", model_name),
+                region=rerank_config.get("region"),
+            )
+    if _is_cohere_compatible_reranker(rerank_config):
+        with _remote_rerank_semaphore:
+            return _rerank_via_cohere_compatible_with_fallback(
+                query,
+                documents,
+                rerank_config.get("model_id", model_name),
+                rerank_config,
             )
     if rerank_model_loader is not None:
         reranker = rerank_model_loader(rerank_model)
@@ -463,31 +539,19 @@ def _compute_rerank_scores(
         return list(reranker.rerank(query, documents))
 
 
-def _is_infomaniak_reranker(config: Dict[str, Any]) -> bool:
-    return (
-        config.get("provider") == "infomaniak"
-        or config.get("source") == "infomaniak"
-    )
-
-
-def _rerank_via_infomaniak_with_fallback(
-    query: str, documents: List[str], model_id: str, config: Dict[str, Any]
-) -> Optional[List[float]]:
-    """Call Infomaniak; return ``None`` on transient unavailability."""
-    try:
-        return rerank_with_infomaniak(
-            query=query, documents=documents, model_id=model_id, config=config
-        )
-    except RerankerUnavailableError as exc:
-        logger.warning("Infomaniak reranker unavailable, skipping rerank: %s", exc)
-        return None
-
-
 def _is_google_vertex_reranker(config: Dict[str, Any]) -> bool:
     return (
         config.get("provider") == "google_vertex"
         or config.get("source") == "google_vertex"
     )
+
+
+def _is_aws_bedrock_reranker(config: Dict[str, Any]) -> bool:
+    return config.get("provider") == "aws_bedrock"
+
+
+def _is_cohere_compatible_reranker(config: Dict[str, Any]) -> bool:
+    return config.get("provider") == "cohere_compatible"
 
 
 def get_rerank_model(
@@ -520,8 +584,10 @@ def get_rerank_model(
             model = {"type": "azure_foundry", "config": rerank_config}
         elif _is_google_vertex_reranker(rerank_config):
             model = {"type": "google_vertex", "config": rerank_config}
-        elif _is_infomaniak_reranker(rerank_config):
-            model = {"type": "infomaniak", "config": rerank_config}
+        elif _is_aws_bedrock_reranker(rerank_config):
+            model = {"type": "aws_bedrock", "config": rerank_config}
+        elif _is_cohere_compatible_reranker(rerank_config):
+            model = {"type": "cohere_compatible", "config": rerank_config}
         else:
             cross_encoder_module = importlib.import_module(
                 "fastembed.rerank.cross_encoder"
@@ -600,6 +666,10 @@ def rerank_results(
     if rerank_scores is None:
         # Reranker signalled transient unavailability — return the original
         # result order rather than 500-ing the search route.
+        note_search_warning(
+            f"Reranker {model_name} unavailable; {len(documents)} results "
+            "returned in original (unreranked) order"
+        )
         return results
     t_rerank_infer_end = time.time()
     logger.info(

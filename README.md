@@ -42,9 +42,9 @@ Evidence Lab document processing pipeline includes the following features:
 - PDF/Word parsing with Docling, to include document structure detection
 - Footnote and references, images and table detection
 - Basic table extraction, with support for more expensive processing as required
-- AI-assisted document summarization
+- AI-assisted document summarization, by map reduce or in a single prompt (`summarize.mode`)
 - AI-assisted tagging of documents
-- Indexing with Open (Huggingface) or proprietary models (Azure foundry, but extensible)
+- Indexing with open models (Hugging Face) or hosted ones (Azure Foundry, Google Vertex, Amazon Bedrock), and extensible to others
 
 2. User interface
 
@@ -57,6 +57,7 @@ Evidence Lab document processing pipeline includes the following features:
 - **Deep Research mode** — coordinator/researcher sub-agent architecture using [deepagents](https://github.com/krrome/deepagents) for thorough multi-step investigations with real-time streaming progress
 - **Brief** — turn a topic into a structured, evidence-backed research brief: generate an outline grounded in the document library, add/move/remove/rename headings in a drag-and-drop table of contents, research each heading into cited prose with AI, then export a branded Word document with a clickable contents page and citations linked to source documents. Briefs can be **shared** (viewer-only) with people or groups, **commented on** in anchored threads for review, and started from reusable **templates** and **voice & tone profiles**. See [Brief](docs/using-evidence-lab/brief.md)
 - **Star ratings** — rate search results, AI summaries, and assistant responses with 1–5 stars and optional comments
+- **Document summaries** — administrators can edit a document's summary, regenerate it with AI choosing the mode, sections and prompt, or regenerate many in a queue; each summary shows how, when and by whom it was made, and groups can set defaults. See [Document Summaries](docs/admin/document-summaries.md)
 - **Drilldown research** — highlight text or click "Find out more" to drill into sub-topics, building an explorable research tree with query inheritance and PDF export
 - Field boosting — detects countries/organizations in the query and promotes matching results; at full weight, non-matching results are excluded
 - Experimental features such as heatmapper for tracking trends in content
@@ -68,9 +69,9 @@ Evidence Lab document processing pipeline includes the following features:
 - Basic language translation
 - PDF preview with in-document search
 - Built-in searchable documentation area with sidebar navigation
-- **In-system evaluation** — built-in, superuser-only evaluation/regression tooling (Admin → Testing): define reusable datasets, build experiments with assertions, and run them against the live Search and AI-Summary pipelines with per-case pass/fail review. See [Evaluation Harness](docs/admin/evaluation.md)
+- **In-system evaluation** — built-in, superuser-only evaluation/regression tooling (Admin → Testing): define reusable datasets, build experiments with assertions, and run them against the live Search and AI-Summary pipelines with per-case pass/fail review, and fact-check a finished Brief with a citation check that judges every cited passage against the exact source excerpts it cites. See [Evaluation Harness](docs/admin/evaluation.md)
 - Administration views to track pipeline, documents, performance and errors
-- Evaluation harness (superuser) — build reusable datasets and experiments to regression-test Search and AI-Summary quality against the live system, including a one-step CSV upload that creates a dataset and a paired LLM-judge experiment (one expected answer per row). See [Evaluation Harness](docs/admin/evaluation.md)
+- Evaluation harness (superuser) — build reusable datasets and experiments to regression-test Search and AI-Summary quality against the live system, including a one-step CSV upload that creates a dataset and a paired LLM-judge experiment (one expected answer per row), plus a Brief citation check with a filterable review table and Excel export. See [Evaluation Harness](docs/admin/evaluation.md)
 
 3. AI platform integrations
 
@@ -101,11 +102,30 @@ You can explore the hosted version at [evidencelab.ai](https://evidencelab.ai).
 
 ### Demo (quickest way to try it)
 
-The interactive demo script guides you through provider selection, API key
-setup, downloads a few World Bank documents, and runs the full pipeline.
+Run Evidence Lab from the published Docker Hub image
+([`astrobagel/evidencelab`](https://hub.docker.com/r/astrobagel/evidencelab)),
+with nothing to build. You need [Docker](https://docs.docker.com/get-started/get-docker/) with Compose,
+[Python 3](https://www.python.org/downloads/) and git, plus an
+API key for one model provider (Azure Foundry, Hugging Face or Google Vertex), or AWS credentials for Amazon Bedrock.
 
-**Running on host** (recommended — can use hardware acceleration such as Apple
-MPS or NVIDIA CUDA, but may require some adjustments to suit your environment):
+```bash
+git clone https://github.com/dividor/evidencelab.git
+cd evidencelab
+python3 scripts/demo/run_demo.py --mode hub
+```
+
+The script asks which provider to use and for its key, then writes `.env`
+(generating every password and secret), adds a demo data source to
+`config.json`, downloads three World Bank reports, processes them inside the
+published image and starts Evidence Lab. When it finishes, open
+http://localhost:8080 and select the **Demo Data from World Bank** data source.
+It runs the newest release, `latest`; add `--version` with a tag to pin a
+specific release. See
+[Running from the Published Image](docs/admin/docker-images.md) for the details.
+
+**Running on host instead** (faster parsing, because it can use hardware
+acceleration such as Apple MPS or NVIDIA CUDA, but it needs the Python
+dependencies and may require some adjustments to suit your environment):
 
 ```bash
 # Create and activate a virtual environment
@@ -120,12 +140,7 @@ docker compose up -d qdrant postgres
 python scripts/demo/run_demo.py --mode host
 ```
 
-The script will automatically configure `.env`, add a demo datasource to
-`config.json`, download documents, and run the pipeline.
-
-**Running in Docker** (guaranteed to work on any Docker-capable machine, but
-can be significantly slower as it cannot utilise GPU or Apple MPS acceleration
-on your host):
+**Running with the development Docker stack** (builds the images from source):
 
 ```bash
 # Start all services
@@ -135,14 +150,15 @@ docker compose up -d --build
 python scripts/demo/run_demo.py --mode docker
 ```
 
-Once complete, open http://localhost:3000 and select the **demo** data source.
+With the host or development stack, open http://localhost:3000 and select the
+**Demo Data from World Bank** data source.
 
-**Options:**
+**Options** (any mode):
 
 ```bash
-python scripts/demo/run_demo.py --mode host --num-docs 10   # Download more documents
-python scripts/demo/run_demo.py --mode host --skip-download  # Re-run pipeline only
-python scripts/demo/run_demo.py --mode host --skip-pipeline  # Download only
+python3 scripts/demo/run_demo.py --mode hub --num-docs 10    # Download more documents
+python3 scripts/demo/run_demo.py --mode hub --skip-download  # Re-run pipeline only
+python3 scripts/demo/run_demo.py --mode hub --skip-pipeline  # Download only
 ```
 
 ### Quick Start
@@ -214,6 +230,7 @@ Global application settings.
 | `ai_summary.enabled` | `bool` | Enable AI-generated summaries in search results |
 | `features.semantic_highlights` | `bool` | Enable semantic highlighting of relevant passages |
 | `features.pdf_highlights` | `bool` | Enable highlighting within the PDF preview |
+| `features.anonymous_ratings` | `bool` | Let visitors who are not signed in rate content (needs `USER_MODULE` `on_passive`); one rating per item per browser. Off when absent |
 | `search.dense_weight` | `float` | Default weight for the dense (semantic) component in hybrid search (0–1) |
 | `search.short_query_dense_weight` | `float` | Dense weight override for short queries |
 | `search.highlight_threshold` | `float` | Minimum score for semantic highlights |
@@ -243,7 +260,7 @@ A dictionary of embedding models available to the pipeline and search engine.
 "model_key": {
   "model_id": "namespace/model-name",   // Model identifier (HuggingFace repo, Azure deployment, etc.)
   "size": 1024,                          // Embedding vector dimensionality
-  "source": "huggingface",              // Provider: "huggingface", "azure_foundry", "google_vertex", "qdrant", "opensearch"
+  "source": "huggingface",              // Provider: "huggingface", "azure_foundry", "google_vertex", "aws_bedrock", "qdrant", "opensearch"
   "type": "dense"                        // "dense" or "sparse"
 }
 ```
@@ -277,6 +294,8 @@ Named model combinations selectable in the UI search settings. Each combo bundle
 
 ```jsonc
 "Combo Name": {
+  "default": true,                      // Optional: the combo users start on
+                                        // (unset = the first combo in the file)
   "embedding_model": "model_key",       // Key from supported_embedding_models
   "sparse_model": "model_key",          // Key from supported_embedding_models (type: sparse)
   "summarization_model": {              // Inline LLM config for AI summaries
@@ -288,7 +307,7 @@ Named model combinations selectable in the UI search settings. Each combo bundle
   },
   "semantic_highlighting_model": { ... },  // Inline LLM config for highlights
   "reranker_model": "model_key",        // Key from supported_rerank_models
-  "rerank_model_page_size": 10          // Optional: candidates per rerank batch
+  "rerank_model_page_size": 10          // Optional: top candidates the reranker scores per search (all when unset)
 }
 ```
 
@@ -355,7 +374,7 @@ Pipeline processing configuration with the following sub-sections:
 | `download` | Download command and arguments (supports `{data_dir}`, `{num_records}`, `{year}`, etc. placeholders) |
 | `parse` | PDF/Word parsing settings (`use_subprocess`, `table_mode`, `no_ocr`, `images_scale`, `enable_superscripts`) |
 | `chunk` | Text chunking settings (`max_tokens`, `min_substantive_size`, `dense_model` for token counting) |
-| `summarize` | AI summarization settings (`enabled`, `llm_model`, `llm_workers`, `context_window`) |
+| `summarize` | AI summarization settings (`enabled`, `llm_model`, `llm_workers`, `context_window`, `mode`, `single_prompt_context_window`, `section_types`) |
 | `tag` | AI tagging settings (`enabled`, `dense_model`, `llm_model`, `taxonomies`) |
 | `index` | Indexing settings (`batch_size`, `embedding_workers`, `dense_models`, `sparse_models`) |
 
@@ -505,10 +524,13 @@ See [`.env.example`](.env.example) for the full list of auth-related settings in
 
 ## Deployment settings
 
-Three groups of settings every deployment should review before going live; each has a page in the in-app docs (Admin section):
+To run Evidence Lab on a cloud's container service rather than one machine, see [Deploying to Cloud Platforms](docs/admin/cloud-deployment.md). It has tested example deployments for AWS (ECS on Fargate), Azure (Container Apps) and Google Cloud (Cloud Run), each with a Terraform template, deploy and teardown scripts, and step-by-step instructions.
+
+Four groups of settings every deployment should review before going live; each has a page in the in-app docs (Admin section):
 
 | Topic | Settings | Docs |
 |-------|----------|------|
 | Deployment facts: who operates the instance, where it is hosted, public address, contact (legal pages, About, Connecting to AI Platforms, Contact dialog, Word export links) | `REACT_APP_OPERATOR_NAME`, `REACT_APP_OPERATOR_ADDRESS`, `REACT_APP_HOSTING_REGION`, `REACT_APP_SITE_URL`, `REACT_APP_CONTACT_EMAIL` (default to the evidencelab.ai values; baked into the UI at build time) | [Customization & Branding](docs/admin/customization.md) |
 | Optional third-party services: translation, LLM tracing, web analytics | `TRANSLATION_PROVIDER`, `TRACING_PROVIDER`, `REACT_APP_GA_MEASUREMENT_ID` and their companions | [Optional Third-Party Services](docs/admin/third-party-services.md) |
+| Performance & scaling: how much work the API does at once, connection pools, reranker preload | `MAX_CONCURRENT_SEARCHES`, `MAX_CONCURRENT_RERANKS`, `MAX_CONCURRENT_REMOTE_RERANKS`, `POSTGRES_POOL_MIN`/`MAX`, `AUTH_DB_POOL_SIZE`/`MAX_OVERFLOW`, `PRELOAD_RERANK_MODEL` (all optional; unset uses the application's default) | [Performance & Scaling](docs/admin/performance-and-scaling.md) |
 | Content moderation: reports, hiding a document, audit trail | Superuser action in the Documents Library, `POST /moderation/documents/{id}/hidden`, `scripts/pipeline/hide_document.py` | [Content Moderation](docs/admin/content-moderation.md) |

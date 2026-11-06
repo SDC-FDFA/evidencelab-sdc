@@ -45,12 +45,14 @@ import { HeatmapTabContent } from './components/app/HeatmapTabContent';
 import { TabContent } from './components/app/TabContent';
 import { CookieConsent } from './components/CookieConsent';
 import { getAnalyticsConsent } from './utils/analytics';
+import { resolveDefaultModelCombo } from './utils/defaultModelCombo';
 import { applyDeploymentFacts, contactEmail } from './utils/deploymentText';
 import FeedbackButton from './components/feedback/FeedbackButton';
 import SavedResearchModal from './components/SavedResearchModal';
 import { AuthContext, useAuthState } from './hooks/useAuth';
 import { useGroupDefaults } from './hooks/useGroupDefaults';
 import { selectSummaryResults } from './utils/summarySelection';
+import { areSearchModelsReady } from './utils/searchModelsReady';
 import { getSessionId, useActivityLogging } from './hooks/useActivityLogging';
 import { buildContextualSearchQuery, serializeDrilldownTree, serializeFullDrilldownTree, patchNodeInTree } from './utils/drilldownUtils';
 import { generateUUID } from './utils/uuid';
@@ -525,7 +527,7 @@ function App() {
   const availableDomains = Object.keys(datasourcesConfig);
 
   const availableModelCombos = Object.keys(modelCombos);
-  const defaultModelCombo = availableModelCombos[0] || '';
+  const defaultModelCombo = resolveDefaultModelCombo(availableModelCombos, modelCombos);
   const resolvedModelCombo = (
     selectedModelCombo && availableModelCombos.includes(selectedModelCombo)
   )
@@ -573,11 +575,12 @@ function App() {
       return;
     }
     if (!selectedModelCombo || !availableModelCombos.includes(selectedModelCombo)) {
-      setSelectedModelCombo(availableModelCombos[0]);
+      setSelectedModelCombo(resolveDefaultModelCombo(availableModelCombos, modelCombos));
     }
   }, [
     modelCombosLoading,
     availableModelCombos,
+    modelCombos,
     selectedModelCombo,
     initialSearchState.modelCombo,
   ]);
@@ -2198,8 +2201,16 @@ function App() {
     setSearchError(buildSearchErrorMessage(error));
   }, []);
 
+  const searchModelsReady = areSearchModelsReady({
+    combosLoading: modelCombosLoading,
+    comboCount: availableModelCombos.length,
+    searchModel,
+    summaryModelConfig,
+    semanticHighlightModelConfig,
+  });
+
   const performSearch = useCallback(async () => {
-    if (!dataSource || !query.trim() || isSearchingRef.current) {
+    if (!dataSource || !query.trim() || !searchModelsReady || isSearchingRef.current) {
       if (isSearchingRef.current) {
         console.warn("Search already in progress, skipping double call.");
       }
@@ -2295,6 +2306,7 @@ function App() {
     minChunkSize,
     rerankModel,
     searchModel,
+    searchModelsReady,
     loadFacets,
     autoMinScore,
     deduplicateEnabled,
@@ -2318,22 +2330,18 @@ function App() {
 
   // Trigger initial search only when a URL query was present on initial load.
   useEffect(() => {
-    const modelsReady = !modelCombosLoading && (
-      !availableModelCombos.length
-      || (searchModel && summaryModelConfig && semanticHighlightModelConfig)
-    );
-    if (!initialSearchDone && initialQueryFromUrlRef.current && query.trim() && modelsReady) {
+    if (
+      !initialSearchDone && initialQueryFromUrlRef.current && query.trim() && searchModelsReady
+    ) {
       setInitialSearchDone(true);
       hasSearchedRef.current = true;
       performSearch();
     }
   }, [
-    availableModelCombos.length,
     initialSearchDone,
-    modelCombosLoading,
     performSearch,
     query,
-    searchModel,
+    searchModelsReady,
   ]);
 
   // Trigger search after example query click (query state must update first)
@@ -2715,6 +2723,8 @@ function App() {
       dataSource={dataSource}
       semanticHighlightModelConfig={semanticHighlightModelConfig}
       dataSourceConfig={currentDataSourceConfig}
+      summaryModelConfig={summaryModelConfig}
+      summaryGroupDefaults={groupDefaults}
     />
   );
 
@@ -3044,6 +3054,7 @@ function App() {
         exampleQueries={currentDataSourceConfig?.example_queries}
         onExampleQueryClick={handleExampleQueryClick}
         greetingMessage={greetingMessage}
+        modelsReady={searchModelsReady}
       />
 
       <TabContent
@@ -3056,6 +3067,8 @@ function App() {
             assistantModelConfig={assistantModelConfig}
             rerankerModel={rerankModel}
             searchSettings={{
+              rerankModelPageSize,
+              embeddingModel: searchModel,
               denseWeight: searchDenseWeight,
               recencyBoost: recencyBoostEnabled,
               recencyWeight,
@@ -3080,6 +3093,8 @@ function App() {
             semanticModelConfig={semanticHighlightModelConfig}
             rerankerModel={rerankModel}
             searchSettings={{
+              rerankModelPageSize,
+              embeddingModel: searchModel,
               denseWeight: searchDenseWeight,
               recencyBoost: recencyBoostEnabled,
               recencyWeight,
@@ -3116,6 +3131,8 @@ function App() {
         isActive={activeTab === 'admin'}
         dataSource={dataSource}
         dataSourceConfig={currentDataSourceConfig}
+        modelCombo={selectedModelCombo}
+        onResultClick={handleResultClick}
       />
 
       <AppFooter>

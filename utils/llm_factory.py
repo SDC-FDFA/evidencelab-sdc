@@ -23,6 +23,7 @@ import os
 from typing import Any, Dict, Optional, Tuple
 
 from langchain_core.language_models.chat_models import BaseChatModel
+from langchain_core.messages import BaseMessage
 from langchain_core.rate_limiters import InMemoryRateLimiter
 from pydantic import SecretStr
 
@@ -125,7 +126,8 @@ def get_llm(
 
     Args:
         provider: LLM provider ("huggingface", "openai", "anthropic",
-                 "azure_foundry", "google_vertex", "openai-compatible").
+                 "azure_foundry", "google_vertex", "openai-compatible",
+                 "aws_bedrock").
                  Resolved from model config or LLM_PROVIDER env var.
                  Raises ValueError if no provider can be determined.
         model: Model identifier. If None, reads from LLM_MODEL env var
@@ -134,7 +136,7 @@ def get_llm(
         max_tokens: Max tokens to generate. If None, reads from
                     LLM_MAX_TOKENS env var (default: 500)
         inference_provider: Inference provider for HuggingFace models
-                           (e.g., "together", "novita"). If provided,
+                           (e.g., "scaleway", "together"). If provided,
                            appends ":inference_provider" to model name.
 
     Returns:
@@ -314,10 +316,12 @@ def _create_llm_for_provider(
         return _create_google_vertex_llm(model, temperature, max_tokens)
     if provider == "openai-compatible":
         return _create_openai_compatible_llm(model, temperature, max_tokens)
+    if provider == "aws_bedrock":
+        return _create_aws_bedrock_llm(model, temperature, max_tokens)
     raise ValueError(
         f"Unsupported LLM_PROVIDER: {provider}. "
         f"Supported: huggingface, openai, azure_foundry, anthropic, "
-        f"google_vertex, openai-compatible"
+        f"google_vertex, openai-compatible, aws_bedrock"
     )
 
 
@@ -335,55 +339,38 @@ def _create_huggingface_llm(
             "https://huggingface.co/settings/tokens"
         )
 
-    if inference_provider:
-        llm = _create_huggingface_inference_llm(model, api_key, inference_provider)
-        if llm:
-            return llm
-    return _create_huggingface_endpoint_llm(model, api_key, temperature, max_tokens)
-
-
-def _create_huggingface_inference_llm(
-    model: str, api_key: str, inference_provider: str
-) -> Optional[BaseChatModel]:
-    from huggingface_hub import InferenceClient
-    from langchain_huggingface import ChatHuggingFace
-
-    try:
-        inference_client = InferenceClient(
-            model=model, token=api_key, provider=inference_provider  # type: ignore[arg-type]
-        )
-        try:
-            llm = ChatHuggingFace(client=inference_client)
-            logger.info(
-                "Using InferenceClient with provider=%s for model=%s",
-                inference_provider,
-                model,
-            )
-            return llm
-        except (TypeError, ValueError) as exc:
-            logger.debug("ChatHuggingFace doesn't accept client parameter: %s", exc)
-            raise
-    except Exception as exc:
-        logger.debug(
-            "InferenceClient not compatible with ChatHuggingFace, "
-            "using HuggingFaceEndpoint instead: %s",
-            exc,
-        )
-        return None
+    return _create_huggingface_endpoint_llm(
+        model, api_key, temperature, max_tokens, inference_provider
+    )
 
 
 def _create_huggingface_endpoint_llm(
-    model: str, api_key: str, temperature: float, max_tokens: int
+    model: str,
+    api_key: str,
+    temperature: float,
+    max_tokens: int,
+    inference_provider: Optional[str] = None,
 ) -> BaseChatModel:
+    """Create a Hugging Face chat model routed through the inference router.
+
+    ``inference_provider`` pins the router to one provider (e.g. "deepinfra").
+    Without it the router chooses a provider itself, and that choice changes
+    whenever Hugging Face's provider list for the model changes.
+    """
     from langchain_huggingface import ChatHuggingFace, HuggingFaceEndpoint
 
     llm_endpoint = HuggingFaceEndpoint(  # type: ignore[call-arg]
         repo_id=model,
         huggingfacehub_api_token=api_key,
+        provider=inference_provider,
         temperature=temperature,
         max_new_tokens=max_tokens,
         timeout=240,
     )
+    if inference_provider:
+        logger.info(
+            "Using Hugging Face provider=%s for model=%s", inference_provider, model
+        )
     return ChatHuggingFace(llm=llm_endpoint)
 
 
@@ -416,6 +403,27 @@ def _create_azure_foundry_llm(
         default_query={"api-version": api_version},
         temperature=temperature,
         max_tokens=max_tokens,
+    )
+
+
+def _create_aws_bedrock_llm(
+    model: str, temperature: float, max_tokens: int
+) -> BaseChatModel:
+    """Create an Amazon Bedrock chat model (Converse API).
+
+    ``model`` is a Bedrock model or inference profile ID, for example
+    ``us.amazon.nova-2-lite-v1:0``. Credentials and region come from the
+    standard AWS sources (environment, profile or ECS task role).
+    """
+    from langchain_aws import ChatBedrockConverse
+
+    from pipeline.utilities.aws_bedrock_client import bedrock_region
+
+    return ChatBedrockConverse(
+        model=model,
+        temperature=temperature,
+        max_tokens=max_tokens,
+        region_name=bedrock_region(),
     )
 
 
@@ -479,12 +487,15 @@ def _create_google_vertex_llm(
             "Google Cloud project not found. Set GOOGLE_CLOUD_PROJECT or "
             "GOOGLE_APPLICATION_CREDENTIALS pointing to a service account JSON."
         )
-    location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
-    # Gemini 2.5 models enable "thinking" by default, which consumes output
-    # tokens from max_output_tokens and truncates the visible response.
+    # Gemini 3 models are served from the global location; a new project got
+    # 404 for them from us-central1.
+    location = os.getenv("GOOGLE_CLOUD_LOCATION", "global")
+    # Gemini 2.5 and Gemini 3 Flash models "think" by default, which consumes
+    # output tokens from max_output_tokens and truncates the visible response
+    # (gemini-3.8-flash at 500 tokens: 406 thinking, answer cut off).
     # Disable thinking so all output tokens are used for the actual response.
     kwargs: dict[str, Any] = {}
-    if "2.5" in model:
+    if "2.5" in model or (model.startswith("gemini-3") and "flash" in model):
         kwargs["thinking_budget"] = 0
     # Throttle requests to stay within GCP Vertex AI per-minute quotas.
     # VERTEX_AI_RPM env var controls requests-per-minute (default 5).
@@ -530,6 +541,22 @@ def _create_openai_compatible_llm(
         api_key=SecretStr(api_key),
         base_url=base_url,
     )
+
+
+def message_text(message: BaseMessage) -> str:
+    """The text of a chat model's reply.
+
+    Providers return ``content`` either as a string (OpenAI, Azure Foundry,
+    Hugging Face) or as a list of content blocks (Amazon Bedrock when
+    streaming, Gemini with tool calls). ``str(message.content)`` turns a block
+    list into its Python repr, which reached users as
+    ``[{'type': 'text', 'text': 'The most', ...}]``. LangChain's ``text``
+    property joins a list's text blocks; string content is returned as it is.
+    """
+    content = message.content
+    if isinstance(content, str):
+        return content
+    return str(message.text)
 
 
 def clear_llm_cache():

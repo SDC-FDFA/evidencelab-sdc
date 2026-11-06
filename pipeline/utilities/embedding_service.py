@@ -8,6 +8,9 @@ Routing:
 - HuggingFace models: served via the Infinity embedding server
   (local or remote, configured via EMBEDDING_API_URL)
 - Azure Foundry models: passthrough to Azure API
+- Amazon Bedrock models: passthrough to the Bedrock API
+- OpenAI-compatible models (OpenAI, Infomaniak, vLLM, ...): any ``/embeddings``
+  endpoint, configured via ``OPENAI_BASE_URL`` / ``OPENAI_API_KEY``
 """
 
 import logging
@@ -15,6 +18,8 @@ import os
 from typing import Any, Dict, Optional
 
 from pipeline.db import DB_VECTORS
+
+from pipeline.utilities.aws_bedrock_client import BedrockEmbeddingClient
 from pipeline.utilities.azure_client import AzureEmbeddingClient
 from pipeline.utilities.embedding_client import RemoteEmbeddingClient
 from pipeline.utilities.google_vertex_client import GoogleVertexEmbeddingClient
@@ -73,14 +78,29 @@ class EmbeddingService:
             return self._create_azure_client(name, model_id)
         if source == "google_vertex":
             return self._create_google_vertex_client(name, model_id, vec_config)
+        if source == "aws_bedrock":
+            return self._create_aws_bedrock_client(name, model_id, vec_config)
+        if source == "openai":
+            return self._create_openai_client(name, model_id, vec_config)
         if source == "huggingface":
             return self._create_huggingface_client(name, model_id)
-        if source == "openai":
-            return self._create_openai_client(name, model_id)
 
         raise ValueError(
             f"Unsupported embedding model source '{source}' for model '{name}'. "
-            "Supported sources: 'huggingface', 'azure_foundry', 'google_vertex', 'openai'."
+            "Supported sources: 'huggingface', 'azure_foundry', 'google_vertex', "
+            "'aws_bedrock', 'openai'."
+        )
+
+    def _create_aws_bedrock_client(
+        self, name: str, model_id: str, vec_config: Dict[str, Any]
+    ) -> BedrockEmbeddingClient:
+        logger.info(
+            "EmbeddingService: created Amazon Bedrock client for '%s' (%s)",
+            name,
+            model_id,
+        )
+        return BedrockEmbeddingClient(
+            model_id=model_id, dimensions=vec_config.get("size")
         )
 
     def _create_azure_client(self, name: str, model_id: str) -> AzureEmbeddingClient:
@@ -136,24 +156,32 @@ class EmbeddingService:
             model_name=model_id,
         )
 
-    def _create_openai_client(self, name: str, model_id: str) -> OpenAIEmbeddingClient:
-        api_base = os.getenv("OPENAI_BASE_URL") or os.getenv("OPENAI_API_BASE")
-        api_key = os.getenv("OPENAI_API_KEY") or os.getenv("INFOMANIAK_API_KEY")
-        
-        if not api_base:
+    def _create_openai_client(
+        self, name: str, model_id: str, vec_config: Dict[str, Any]
+    ) -> OpenAIEmbeddingClient:
+        """Client for any OpenAI-compatible ``/embeddings`` endpoint.
+
+        The base URL and API key are read from the environment variables named
+        by ``base_url_env`` / ``api_key_env`` in the model config (defaults:
+        ``OPENAI_BASE_URL`` and ``OPENAI_API_KEY``), so several providers can
+        coexist in one config.
+        """
+        base_url_env = vec_config.get("base_url_env", "OPENAI_BASE_URL")
+        api_key_env = vec_config.get("api_key_env", "OPENAI_API_KEY")
+        base_url = os.getenv(base_url_env)
+        if not base_url:
             raise ValueError(
-                f"OPENAI_BASE_URL / OPENAI_API_BASE environment variable not set for "
-                f"OpenAI embedding model '{name}' ({model_id})."
+                f"{base_url_env} environment variable not set for "
+                f"OpenAI-compatible embedding model '{name}' ({model_id})."
             )
-        
         logger.info(
-            "EmbeddingService: created OpenAI embedding client for '%s' (%s) via %s",
+            "EmbeddingService: created OpenAI-compatible client for '%s' (%s) via %s",
             name,
             model_id,
-            api_base,
+            base_url,
         )
         return OpenAIEmbeddingClient(
-            base_url=api_base,
+            base_url=base_url,
             model_name=model_id,
-            api_key=api_key,
+            api_key=os.getenv(api_key_env),
         )

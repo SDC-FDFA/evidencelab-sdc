@@ -12,6 +12,9 @@ export interface AssistantUsage {
 export interface AssistantDoneData {
   threadId?: string;
   messageId?: string;
+  // The agent run behind this turn (the Brief stores it with a section's
+  // original output, for tracing).
+  runId?: string;
   // Link to the LLM trace behind this turn, when the deployment traces calls.
   trace_url?: string;
   // Informational only: the backend records usage server-side against the
@@ -37,6 +40,42 @@ interface ConversationMessage {
   sources?: SourceReference[];
 }
 
+/**
+ * Search settings for an assistant turn: the user's search settings plus the
+ * selected model combo's reranker cap and embedding model, so the assistant
+ * searches like the search tab.
+ */
+export type AssistantSearchSettings = Partial<SearchSettings> & {
+  rerankModelPageSize?: number | null;
+  embeddingModel?: string | null;
+};
+
+/** One section of a brief as its research prompt describes the outline: its
+ *  text only when it is written. */
+export interface BriefOutlineSection {
+  title: string;
+  level: number;
+  content?: string;
+}
+
+/**
+ * The parts of a Brief section's research prompt. The API writes the prompt
+ * from them (ui/backend/services/brief_section_prompt.py); `current` is the
+ * index in `outline` of the section being written.
+ */
+export interface BriefSectionPrompt {
+  outline: BriefOutlineSection[];
+  current: number;
+  mode: 'generate' | 'update';
+  topic?: string;
+  instructions?: string;
+  focus?: string;
+  draft?: string;
+  instruction?: string;
+  published_after?: string;
+  voice_instructions?: string;
+}
+
 interface AssistantStreamOptions {
   apiBaseUrl: string;
   query: string;
@@ -44,7 +83,7 @@ interface AssistantStreamOptions {
   threadId?: string | null;
   assistantModelConfig?: SummaryModelConfig | null;
   rerankerModel?: string | null;
-  searchSettings?: Partial<SearchSettings> | null;
+  searchSettings?: AssistantSearchSettings | null;
   deepResearch?: boolean;
   conversationHistory?: ConversationMessage[];
   // ISO date; constrains the library search to documents published on/after it
@@ -60,6 +99,12 @@ interface AssistantStreamOptions {
   // Target length of the written answer in words (deep research). The backend
   // asks the coordinator for that length and raises its token ceiling to fit.
   targetWords?: number | null;
+  // Brief: the sub-headings of the section being written when it is a
+  // top-level heading's introduction (no headings, none of their detail).
+  introducesSubSections?: string[] | null;
+  // Brief: the section being researched; the API writes its prompt, and
+  // `query` is then the section heading.
+  briefSection?: BriefSectionPrompt | null;
   handlers: AssistantStreamHandlers;
   signal?: AbortSignal;
 }
@@ -150,6 +195,7 @@ const handleStreamedData = (
       handlers.onDone({
         threadId: streamedData.threadId,
         messageId: streamedData.messageId,
+        runId: streamedData.runId,
         trace_url: streamedData.trace_url,
         usage: streamedData.usage,
       });
@@ -206,7 +252,7 @@ const readStream = async (
 
 /** Convert frontend SearchSettings to backend search_settings format. */
 const buildSearchSettingsPayload = (
-  settings?: Partial<SearchSettings> | null,
+  settings?: AssistantSearchSettings | null,
 ): Record<string, unknown> | undefined => {
   if (!settings) return undefined;
   const payload: Record<string, unknown> = {};
@@ -221,6 +267,8 @@ const buildSearchSettingsPayload = (
   if (settings.wideSearch != null) payload.wide_search = settings.wideSearch;
   if (settings.wideGroupSize != null) payload.wide_group_size = settings.wideGroupSize;
   if (settings.wideLimit != null) payload.wide_limit = settings.wideLimit;
+  if (settings.rerankModelPageSize != null) payload.rerank_model_page_size = settings.rerankModelPageSize;
+  if (settings.embeddingModel != null) payload.embedding_model = settings.embeddingModel;
   if (settings.fieldBoostFields != null && Object.keys(settings.fieldBoostFields).length > 0) {
     payload.field_boost_fields = settings.fieldBoostFields;
   }
@@ -241,6 +289,8 @@ export const streamAssistantChat = async ({
   activityId,
   usageContext,
   targetWords,
+  introducesSubSections,
+  briefSection,
   handlers,
   signal,
 }: AssistantStreamOptions): Promise<void> => {
@@ -267,6 +317,8 @@ export const streamAssistantChat = async ({
       session_id: getSessionId(),
       usage_context: usageContext || undefined,
       target_words: targetWords || undefined,
+      introduces_sub_sections: introducesSubSections?.length ? introducesSubSections : undefined,
+      brief_section: briefSection || undefined,
     }),
     signal,
   });
