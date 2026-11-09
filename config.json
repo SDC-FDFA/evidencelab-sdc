@@ -376,12 +376,14 @@
         "filename": "filename",
         "country": "country",
         "category": "category",
+        "published_year": "year",
         "language": "fixed_value:en"
       },
       "default_filter_fields": {
         "title": "Document Title",
         "country": "Country",
-        "src_category": "Category"
+        "src_category": "Category",
+        "published_year": "Year Published"
       },
       "metadata_panel_fields": {
         "title": "Document Title",
