@@ -67,7 +67,7 @@ services:
 
   reverse-proxy:
     volumes:
-      - ./Caddyfile.vps:/etc/caddy/Caddyfile   # replaces the repo's Caddyfile mount
+      - ./Caddyfile.server:/etc/caddy/Caddyfile   # replaces the repo's Caddyfile mount
   
   mailpit:
     image: axllent/mailpit:latest
