@@ -381,7 +381,7 @@
       "default_filter_fields": {
         "title": "Document Title",
         "country": "Country",
-        "category": "Category"
+        "src_category": "Category"
       },
       "metadata_panel_fields": {
         "title": "Document Title",
